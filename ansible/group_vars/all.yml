@@ -1,0 +1,11 @@
+shared_root: /srv/otus
+app_root: /opt/otus-dz04
+app_user: otusapp
+drbd_resource: otus
+drbd_device: /dev/drbd0
+drbd_backing_device: /dev/disk/by-id/virtio-gfs-data
+allow_experimental_storage: false
+initialize_storage: false
+fencing_verified: false
+uwsgi_processes: 2
+

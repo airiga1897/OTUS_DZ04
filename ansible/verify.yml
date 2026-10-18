@@ -1,0 +1,53 @@
+- name: Проверить общий том
+  hosts: backend
+  become: true
+  tasks:
+    - name: Убедиться в использовании GFS2
+      ansible.builtin.command: "findmnt -n -o FSTYPE {{ shared_root }}"
+      register: filesystem
+      changed_when: false
+      failed_when: filesystem.stdout != 'gfs2'
+
+    - name: Записать файл каждого backend
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import os,sys; f=open(sys.argv[1],'w'); f.write(sys.argv[2]+'\\n'); f.flush(); os.fsync(f.fileno()); f.close()"
+          - "{{ shared_root }}/.verify-{{ inventory_hostname }}"
+          - "{{ inventory_hostname }}"
+
+    - name: Прочитать файлы обоих backend
+      ansible.builtin.command: "cat {{ shared_root }}/.verify-{{ item }}"
+      loop: "{{ groups['backend'] }}"
+      register: shared_files
+      changed_when: false
+      failed_when: shared_files.stdout != item
+
+    - name: Проверить состояние реплик
+      ansible.builtin.command: "drbdadm status {{ drbd_resource }}"
+      register: drbd_status
+      changed_when: false
+      failed_when: "'disk:UpToDate' not in drbd_status.stdout or 'peer-disk:UpToDate' not in drbd_status.stdout"
+
+- name: Проверить фронты
+  hosts: front
+  tasks:
+    - name: Проверить динамику через Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        return_content: true
+      register: home
+      failed_when: home.status != 200 or 'База знаний OTUS' not in home.content
+
+    - name: Проверить готовность backend
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health/ready
+
+    - name: Проверить статику с новым ключом кеша
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/static/knowledge/site.css?verify={{ ansible_date_time.epoch }}"
+        return_content: true
+      register: static_result
+      failed_when: static_result.status != 200 or 'box-sizing' not in static_result.content
+

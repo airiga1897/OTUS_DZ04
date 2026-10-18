@@ -1,0 +1,16 @@
+# Все ID и имена получить из выбранного проекта/пула. Паролей здесь нет.
+region = "ru-9"
+admin_ssh_port = 22 # Стандартный SSH; 443 — необязательная альтернатива.
+availability_zone = "ru-9a"
+image_id = "REPLACE_WITH_UBUNTU_2404_IMAGE_ID"
+volume_type = "REPLACE_WITH_VOLUME_TYPE_IN_SELECTED_SEGMENT"
+lb_flavor_id = "REPLACE_WITH_HA_LOAD_BALANCER_FLAVOR_ID"
+flavor_ids = {
+  front = "REPLACE_WITH_1_VCPU_1GB_FLAVOR_ID"
+  backend = "REPLACE_WITH_1_VCPU_2GB_FLAVOR_ID"
+  db = "REPLACE_WITH_1_VCPU_1GB_FLAVOR_ID"
+}
+admin_cidrs = ["YOUR_PUBLIC_IP/32"]
+# boot_disk_gb >= min_disk выбранного образа; тип диска может требовать больше 1 ГБ.
+boot_disk_gb = 10
+data_disk_gb = 1

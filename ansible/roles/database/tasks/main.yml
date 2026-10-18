@@ -1,0 +1,61 @@
+- name: Установить PostgreSQL и арбитр
+  ansible.builtin.apt:
+    name: [postgresql, pcs, corosync-qnetd, openssl]
+
+- name: Настроить адрес PostgreSQL
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql/16/main/postgresql.conf
+    regexp: '^#?listen_addresses\\s*='
+    line: "listen_addresses = '{{ private_ip }}'"
+  notify: Перезапустить PostgreSQL
+
+- name: Разрешить БД только backend
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql/16/main/pg_hba.conf
+    line: "host otus otus {{ hostvars[item].private_ip }}/32 scram-sha-256"
+  loop: "{{ groups['backend'] }}"
+  notify: Перезапустить PostgreSQL
+
+- name: Применить настройки БД
+  ansible.builtin.meta: flush_handlers
+
+- name: Проверить пользователя БД
+  ansible.builtin.command: runuser -u postgres -- psql -Atc "SELECT 1 FROM pg_roles WHERE rolname='otus'"
+  register: db_role
+  changed_when: false
+
+- name: Создать пользователя БД
+  ansible.builtin.command: runuser -u postgres -- psql -v ON_ERROR_STOP=1
+  args:
+    stdin: "CREATE ROLE otus LOGIN PASSWORD '{{ db_password }}';"
+  when: db_role.stdout != '1'
+  no_log: true
+
+- name: Проверить базу
+  ansible.builtin.command: runuser -u postgres -- psql -Atc "SELECT 1 FROM pg_database WHERE datname='otus'"
+  register: db_exists
+  changed_when: false
+
+- name: Создать базу
+  ansible.builtin.command: runuser -u postgres -- createdb -O otus otus
+  when: db_exists.stdout != '1'
+
+- name: Установить пароль pcs только для настройки TLS арбитра
+  ansible.builtin.user:
+    name: hacluster
+    groups: haclient
+    append: true
+    password: "{{ cluster_password | password_hash('sha512', cluster_password[:16]) }}"
+  no_log: true
+
+- name: Первично настроить сертификаты арбитра
+  ansible.builtin.command: pcs quorum device setup model net --enable --start
+  args:
+    creates: /etc/corosync/qnetd/nssdb/cert9.db
+
+- name: Включить службы
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [postgresql, pcsd, corosync-qnetd]

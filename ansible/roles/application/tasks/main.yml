@@ -1,0 +1,70 @@
+- name: Установить пакеты для сборки uWSGI
+  ansible.builtin.apt:
+    name: [python3-dev, build-essential, libpcre3-dev]
+
+- name: Создать локальный каталог приложения
+  ansible.builtin.file:
+    path: "{{ app_root }}"
+    state: directory
+    owner: root
+    mode: "0755"
+
+- name: Развернуть код приложения
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../app/"
+    dest: "{{ app_root }}/app/"
+    owner: root
+    mode: "u=rwX,g=rX,o=rX"
+  notify: Приложение требует перезапуска
+
+- name: Создать venv и установить фиксированные зависимости
+  ansible.builtin.pip:
+    requirements: "{{ app_root }}/app/requirements.txt"
+    virtualenv: "{{ app_root }}/venv"
+    virtualenv_command: python3 -m venv
+  notify: Приложение требует перезапуска
+
+- name: Установить uWSGI в venv
+  ansible.builtin.pip:
+    name: uwsgi==2.0.31
+    virtualenv: "{{ app_root }}/venv"
+  notify: Приложение требует перезапуска
+
+- name: Проверить список разрешённых Host
+  ansible.builtin.assert:
+    that: app_allowed_hosts | default([]) | length > 0
+    fail_msg: "Контроллер должен передать адрес сайта и localhost в app_allowed_hosts."
+
+- name: Записать окружение приложения
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ app_root }}/app.env"
+    owner: root
+    mode: "0600"
+  no_log: true
+  notify: Приложение требует перезапуска
+
+- name: Записать конфигурацию uWSGI
+  ansible.builtin.template:
+    src: uwsgi.ini.j2
+    dest: "{{ app_root }}/uwsgi.ini"
+    mode: "0644"
+  notify: Приложение требует перезапуска
+
+- name: Установить службу приложения
+  ansible.builtin.template:
+    src: otus-uwsgi.service.j2
+    dest: /etc/systemd/system/otus-uwsgi.service
+    mode: "0644"
+  register: app_unit
+
+- name: Обновить описание службы
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: app_unit.changed
+
+- name: Оставить запуск приложения под управлением Pacemaker
+  ansible.builtin.systemd:
+    name: otus-uwsgi
+    enabled: false
+

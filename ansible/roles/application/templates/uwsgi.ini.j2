@@ -1,0 +1,23 @@
+[uwsgi]
+chdir = {{ app_root }}/app
+module = config.wsgi:application
+home = {{ app_root }}/venv
+socket = {{ private_ip }}:3031
+master = true
+processes = {{ uwsgi_processes }}
+threads = 2
+enable-threads = true
+need-app = true
+vacuum = true
+die-on-term = true
+reload-mercy = 10
+worker-reload-mercy = 10
+harakiri = 20
+max-requests = 2000
+buffer-size = 8192
+static-map = /static={{ shared_root }}/static
+static-map = /media={{ shared_root }}/media
+static-expires = /* 60
+static-safe = {{ shared_root }}
+add-header = X-Backend-Node: {{ inventory_hostname }}
+

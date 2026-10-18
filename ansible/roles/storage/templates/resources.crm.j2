@@ -1,0 +1,22 @@
+property cib-bootstrap-options: stonith-enabled=true stonith-action=off no-quorum-policy=freeze stonith-timeout=180s
+rsc_defaults rsc-options: resource-stickiness=100
+{% if (cloud_provider | default('yandex')) == 'selectel' %}
+primitive fence-selectel stonith:fence_selectel params config=/etc/otus-selectel-fence.json pcmk_host_list="backend1 backend2" pcmk_host_check=static-list pcmk_reboot_action=off pcmk_off_timeout=150s op monitor interval=60s timeout=60s
+{% else %}
+primitive fence-yc stonith:fence_yc params config=/etc/otus-fence.json pcmk_host_list="backend1 backend2" pcmk_host_check=static-list pcmk_reboot_action=off pcmk_off_timeout=150s op monitor interval=60s timeout=30s
+{% endif %}
+primitive drbd-otus ocf:linbit:drbd params drbd_resource={{ drbd_resource }} op monitor interval=15s role=Promoted timeout=30s op monitor interval=20s role=Unpromoted timeout=30s
+clone drbd-clone drbd-otus meta promotable=true promoted-max=2 promoted-node-max=1 clone-max=2 clone-node-max=1 notify=true interleave=true
+primitive dlm ocf:pacemaker:controld op monitor interval=30s on-fail=fence
+clone dlm-clone dlm meta interleave=true
+primitive gfs ocf:heartbeat:Filesystem params device={{ drbd_device }} directory={{ shared_root }} fstype=gfs2 options=noatime op monitor interval=20s timeout=40s on-fail=fence op stop timeout=90s on-fail=fence
+clone gfs-clone gfs meta interleave=true
+primitive uwsgi systemd:otus-uwsgi op start timeout=60s op stop timeout=60s op monitor interval=15s timeout=30s
+clone uwsgi-clone uwsgi meta interleave=true target-role=Stopped
+order drbd-before-dlm Mandatory: drbd-clone:promote dlm-clone:start
+colocation dlm-with-drbd inf: dlm-clone drbd-clone:Promoted
+order dlm-before-gfs Mandatory: dlm-clone:start gfs-clone:start
+colocation gfs-with-dlm inf: gfs-clone dlm-clone
+order gfs-before-uwsgi Mandatory: gfs-clone:start uwsgi-clone:start
+colocation uwsgi-with-gfs inf: uwsgi-clone gfs-clone
+

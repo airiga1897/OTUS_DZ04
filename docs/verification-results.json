@@ -1,0 +1,97 @@
+{
+  "infrastructure": {
+    "provider": "Selectel",
+    "frontends": 2,
+    "backends": 2,
+    "databases": 1,
+    "load_balancer": "Octavia HA",
+    "application": "Django + uWSGI",
+    "database": "PostgreSQL",
+    "shared_storage": "GFS2 on both backends over DRBD dual-primary",
+    "storage_mode": "unsupported educational experiment"
+  },
+  "deployment": {
+    "terraform": true,
+    "ansible": true,
+    "repeat_site": {
+      "backend1": {
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0
+      },
+      "backend2": {
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0
+      },
+      "db": {
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0
+      },
+      "nginx1": {
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0
+      },
+      "nginx2": {
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0
+      }
+    }
+  },
+  "functional_checks": {
+    "shared_files_read_from_both_backends": true,
+    "drbd_both_uptodate": true,
+    "dynamic_pages": true,
+    "readiness": true,
+    "uncached_static": true,
+    "both_frontends": true
+  },
+  "fencing": [
+    {
+      "executor": "backend1",
+      "target": "backend2",
+      "passed": true,
+      "restored": true
+    },
+    {
+      "executor": "backend2",
+      "target": "backend1",
+      "passed": true,
+      "restored": true
+    }
+  ],
+  "vm_failures": [
+    {
+      "node": "backend1",
+      "passed": true,
+      "restored": true
+    },
+    {
+      "node": "backend2",
+      "passed": true,
+      "restored": true
+    },
+    {
+      "node": "nginx2",
+      "passed": true,
+      "restored": true
+    },
+    {
+      "node": "nginx1",
+      "passed": true,
+      "restored": true
+    }
+  ],
+  "network_partition": {
+    "passed": true,
+    "fenced_node": "backend2",
+    "restored": true
+  },
+  "cleanup": {
+    "success": true,
+    "managed_remaining": 0
+  }
+}

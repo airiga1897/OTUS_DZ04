@@ -1,0 +1,36 @@
+- name: Установить Nginx
+  ansible.builtin.apt:
+    name: nginx
+
+- name: Удалить сайт по умолчанию
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Перезагрузить Nginx
+
+- name: Создать каталог конфигурации
+  ansible.builtin.file:
+    path: /etc/nginx/otus
+    state: directory
+
+- name: Создать каталог кеша Nginx
+  ansible.builtin.file:
+    path: /var/cache/nginx/otus
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0750'
+
+- name: Установить полный конфиг Nginx с проверкой
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    validate: /usr/sbin/nginx -t -c %s
+  notify: Перезагрузить Nginx
+
+- name: Включить Nginx
+  ansible.builtin.service:
+    name: nginx
+    enabled: true
+    state: started
+

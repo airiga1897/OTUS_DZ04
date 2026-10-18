@@ -1,0 +1,22 @@
+totem {
+ version: 2
+ cluster_name: otus-dz04
+ transport: knet
+}
+nodelist {
+{% for node in groups['backend'] %}
+ node {
+  name: {{ node }}
+  nodeid: {{ loop.index }}
+  ring0_addr: {{ hostvars[node].private_ip }}
+ }
+{% endfor %}
+}
+quorum {
+ provider: corosync_votequorum
+ wait_for_all: 1
+}
+logging {
+ to_syslog: yes
+}
+
