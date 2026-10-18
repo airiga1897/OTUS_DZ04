@@ -1,0 +1,219 @@
+- name: Подтвердить экспериментальный режим
+  ansible.builtin.assert:
+    that: allow_experimental_storage | bool
+    fail_msg: "DRBD dual-primary неподдерживаемый эксперимент. Передайте allow_experimental_storage=true после ознакомления с README."
+
+- name: Проверить конфигурацию Selectel до настройки хранилища
+  ansible.builtin.assert:
+    that:
+      - selectel_fence_auth is defined
+      - selectel_fence_auth.username != 'otus-dz04-terraform'
+      - drbd_backing_device.startswith('/dev/disk/by-id/')
+    fail_msg: "Нужны отдельная учётная запись fencing и проверенный by-id диска."
+  when: (cloud_provider | default('yandex')) == 'selectel'
+  no_log: true
+
+- name: Установить пакеты для LINBIT PPA и кластера
+  ansible.builtin.apt:
+    name: [software-properties-common, build-essential, patch, diffutils, libelf-dev, "linux-headers-{{ ansible_facts.kernel }}", "linux-modules-extra-{{ ansible_facts.kernel }}", corosync, pacemaker, pcs, crmsh, resource-agents-base, resource-agents-extra, gfs2-utils, dlm-controld, corosync-qdevice, openssl]
+
+- name: Проверить стандартный компилятор перед сборкой DRBD
+  ansible.builtin.command: gcc --version
+  changed_when: false
+
+- name: Проверить доступность модуля GFS2 до инициализации
+  ansible.builtin.command: modprobe gfs2
+  changed_when: false
+
+- name: Подключить community PPA для учебного DRBD 9
+  ansible.builtin.apt_repository:
+    repo: ppa:linbit/linbit-drbd9-stack
+    update_cache: true
+
+- name: Установить DRBD с сохранением диагностики сборки
+  block:
+    - name: Установить DRBD
+      ansible.builtin.apt:
+        name: [drbd-dkms, drbd-utils]
+  rescue:
+    - name: Прочитать журнал DKMS до удаления стенда
+      ansible.builtin.shell: cat /var/lib/dkms/drbd/*/build/make.log
+      register: drbd_build_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Сохранить причину сборки в журнале развёртывания
+      ansible.builtin.debug:
+        var: drbd_build_diagnostics.stdout_lines
+
+    - name: Остановить настройку после ошибки DKMS
+      ansible.builtin.fail:
+        msg: "DRBD не собран. Журнал make.log сохранён выше в deploy.log; инициализация дисков не выполнялась."
+
+- name: Загрузить модуль DRBD
+  ansible.builtin.command: modprobe drbd
+  changed_when: false
+
+- name: Загружать DRBD после перезапуска ВМ
+  ansible.builtin.copy:
+    content: "drbd\n"
+    dest: /etc/modules-load.d/drbd.conf
+    mode: "0644"
+
+- name: Получить фактическую версию модуля
+  ansible.builtin.command: cat /proc/drbd
+  changed_when: false
+  register: drbd_version
+
+- name: Не продолжать со старым модулем ядра
+  ansible.builtin.assert:
+    that: "'version: 9.' in drbd_version.stdout"
+    fail_msg: "Загружен не DRBD 9. Не перезагружайте узел автоматически: проверьте DKMS и согласуйте перезагрузку."
+
+- name: Проверить обработчики fencing DRBD
+  ansible.builtin.stat:
+    path: /usr/lib/drbd/crm-fence-peer.9.sh
+  register: fence_handler
+
+- name: Проверить совместимость пакета DRBD
+  ansible.builtin.assert:
+    that: fence_handler.stat.exists
+
+- name: Записать конфигурацию DRBD без запуска ресурса
+  ansible.builtin.template:
+    src: otus.res.j2
+    dest: /etc/drbd.d/otus.res
+    mode: "0600"
+
+- name: Установить агент YC fencing
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/fence_yc.py"
+    dest: /usr/sbin/fence_yc
+    mode: "0755"
+  when: (cloud_provider | default('yandex')) == 'yandex'
+
+- name: Установить агент Selectel fencing и HTTPS-клиент
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/{{ item.src }}"
+    dest: "/usr/sbin/{{ item.dest }}"
+    mode: "0755"
+  loop:
+    - {src: fence_selectel.py, dest: fence_selectel}
+    - {src: selectel_api.py, dest: selectel_api.py}
+  when: (cloud_provider | default('yandex')) == 'selectel'
+
+- name: Записать root-only конфигурацию Selectel fencing
+  ansible.builtin.copy:
+    content: "{{ {'auth': selectel_fence_auth, 'nodes': dict(groups['backend'] | zip(groups['backend'] | map('extract', hostvars, 'instance_id')))} | to_nice_json }}"
+    dest: /etc/otus-selectel-fence.json
+    owner: root
+    group: root
+    mode: "0600"
+  when: (cloud_provider | default('yandex')) == 'selectel'
+  no_log: true
+
+- name: Записать разрешённые ID для fencing
+  ansible.builtin.copy:
+    content: "{{ dict(groups['backend'] | zip(groups['backend'] | map('extract', hostvars, 'instance_id'))) | to_nice_json }}"
+    dest: /etc/otus-fence.json
+    owner: root
+    mode: "0600"
+  when: (cloud_provider | default('yandex')) == 'yandex'
+
+- name: Записать ключ Corosync
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import base64,os,pathlib,sys; p=pathlib.Path('/etc/corosync/authkey'); data=base64.b64decode(sys.stdin.read(),validate=True); changed=not p.exists() or p.read_bytes()!=data; p.write_bytes(data) if changed else None; os.chmod(p,0o400); print('changed' if changed else 'unchanged')"
+    stdin: "{{ cluster_authkey_b64 }}"
+    stdin_add_newline: false
+  register: corosync_authkey
+  changed_when: corosync_authkey.stdout == 'changed'
+  no_log: true
+
+- name: Проверить существующую конфигурацию кластера
+  ansible.builtin.stat:
+    path: /etc/corosync/otus-configured
+  register: existing_cluster
+
+- name: Проверить автозапуск Pacemaker после установки пакетов
+  ansible.builtin.command: systemctl is-active pacemaker
+  register: initial_pacemaker
+  changed_when: false
+  failed_when: false
+  when: not existing_cluster.stat.exists
+
+- name: Обследовать ресурсы автоматически запущенного кластера
+  ansible.builtin.command: cibadmin --query --scope resources
+  register: initial_resources
+  changed_when: false
+  when:
+    - not existing_cluster.stat.exists
+    - initial_pacemaker.stdout == 'active'
+
+- name: Не останавливать кластер с существующими ресурсами
+  ansible.builtin.assert:
+    that:
+      - "'<primitive' not in initial_resources.stdout"
+      - "'<bundle' not in initial_resources.stdout"
+  when:
+    - not existing_cluster.stat.exists
+    - initial_pacemaker.stdout == 'active'
+
+- name: Остановить пустой первоначальный кластер до инициализации дисков
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [pacemaker, corosync]
+  when: not existing_cluster.stat.exists
+
+- name: Записать первоначальную конфигурацию Corosync
+  ansible.builtin.template:
+    src: corosync.conf.j2
+    dest: /etc/corosync/corosync.conf
+    mode: "0644"
+  when: not existing_cluster.stat.exists
+
+- name: Установить пароль pcs
+  ansible.builtin.user:
+    name: hacluster
+    groups: haclient
+    append: true
+    password: "{{ cluster_password | password_hash('sha512', cluster_password[:16]) }}"
+  no_log: true
+
+- name: Включить pcsd для настройки кластера
+  ansible.builtin.service:
+    name: pcsd
+    state: started
+    enabled: true
+
+- name: Подготовить точку монтирования без разрешения локальной записи
+  ansible.builtin.file:
+    path: "{{ shared_root }}"
+    state: directory
+    owner: root
+    mode: "0000"
+  when: not existing_cluster.stat.exists
+
+- name: Создать каталог конфигурации ресурсов
+  ansible.builtin.file:
+    path: /etc/otus-cluster
+    state: directory
+    mode: "0700"
+
+- name: Подготовить описание ресурсов Pacemaker
+  ansible.builtin.template:
+    src: resources.crm.j2
+    dest: "{{ app_root }}/resources.crm"
+    mode: "0600"
+  vars:
+    app_root: /etc/otus-cluster
+
+- name: Создать служебный каталог
+  ansible.builtin.file:
+    path: /var/lib/otus-dz04
+    state: directory
+    mode: "0700"

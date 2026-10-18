@@ -1,0 +1,25 @@
+[Unit]
+Description=OTUS Django and uWSGI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+EnvironmentFile={{ app_root }}/app.env
+WorkingDirectory={{ app_root }}/app
+ExecStartPre=/usr/bin/mountpoint -q {{ shared_root }}
+ExecStart={{ app_root }}/venv/bin/uwsgi --ini {{ app_root }}/uwsgi.ini
+Restart=no
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+IPAddressDeny=169.254.169.254/32
+ReadWritePaths={{ shared_root }}
+UMask=0027
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

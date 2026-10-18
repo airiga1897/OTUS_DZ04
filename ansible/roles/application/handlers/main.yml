@@ -1,0 +1,4 @@
+- name: Приложение требует перезапуска
+  ansible.builtin.debug:
+    msg: "После обновления выполните activate.yml: миграции, collectstatic и перезапуск через Pacemaker."
+

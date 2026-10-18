@@ -1,0 +1,38 @@
+- name: Миграции и статика одним узлом
+  hosts: backend1
+  become: true
+  tasks:
+    - name: Проверить запуск приложения до обновления
+      ansible.builtin.command: systemctl is-active otus-uwsgi
+      register: previous_app_state
+      changed_when: false
+      failed_when: false
+
+    - name: Проверить тип файловой системы
+      ansible.builtin.command: "findmnt -n -o FSTYPE {{ shared_root }}"
+      register: filesystem
+      changed_when: false
+      failed_when: filesystem.stdout != 'gfs2'
+
+    - name: Выполнить миграции, начальные материалы и collectstatic
+      ansible.builtin.shell: |
+        set -eu
+        set -a
+        . {{ app_root }}/app.env
+        set +a
+        cd {{ app_root }}/app
+        runuser -u {{ app_user }} --preserve-environment -- {{ app_root }}/venv/bin/python manage.py migrate --noinput
+        runuser -u {{ app_user }} --preserve-environment -- {{ app_root }}/venv/bin/python manage.py seed_lessons
+        runuser -u {{ app_user }} --preserve-environment -- {{ app_root }}/venv/bin/python manage.py collectstatic --noinput
+      args:
+        executable: /bin/bash
+      no_log: true
+
+    - name: Запустить приложение через Pacemaker
+      ansible.builtin.command: crm resource start uwsgi-clone
+
+    - name: Перезапустить ранее работавшее приложение после обновления
+      ansible.builtin.command: crm resource restart uwsgi-clone
+      when: previous_app_state.stdout == 'active'
+
+

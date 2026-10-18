@@ -1,0 +1,6 @@
+cloud_id = "CLOUD_ID"
+folder_id = "FOLDER_ID"
+admin_cidrs = ["YOUR_PUBLIC_IP/32"]
+ssh_public_key_path = "../.local/otus_dz04.pub"
+# Для повторяемого стенда после первого plan закрепите image_id.
+

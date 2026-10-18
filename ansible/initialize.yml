@@ -1,0 +1,144 @@
+- name: Первичная инициализация только новых дисков
+  hosts: backend
+  become: true
+  vars_files: [../.local/secrets.yml]
+  tasks:
+    - name: Требовать явные флаги и проверку fencing
+      ansible.builtin.assert:
+        that:
+          - allow_experimental_storage | bool
+          - initialize_storage | bool
+          - fencing_verified | bool
+        fail_msg: "Сначала выполните план проверки fencing из docs/testing.md."
+
+    - name: Проверить отсутствие завершённой инициализации
+      ansible.builtin.stat:
+        path: /var/lib/otus-dz04/initialized
+      register: initialized
+
+    - name: Запретить повторное форматирование
+      ansible.builtin.assert:
+        that: not initialized.stat.exists
+
+    - name: Проверить остановку Pacemaker
+      ansible.builtin.command: systemctl is-active pacemaker
+      register: pacemaker_active
+      failed_when: false
+      changed_when: false
+
+    - name: Не вмешиваться в активный кластер
+      ansible.builtin.assert:
+        that: pacemaker_active.stdout != 'active'
+
+    - name: Обследовать новый диск
+      ansible.builtin.command: "wipefs -n --json {{ drbd_backing_device }}"
+      register: disk_signatures
+      changed_when: false
+
+    - name: Запретить инициализацию диска с сигнатурами
+      ansible.builtin.assert:
+        that: (disk_signatures.stdout | from_json).signatures | length == 0
+
+    - name: Создать метаданные нового DRBD
+      ansible.builtin.command: "drbdadm create-md --force {{ drbd_resource }}"
+
+    - name: Поднять новый ресурс
+      ansible.builtin.command: "drbdadm up {{ drbd_resource }}"
+
+- name: Синхронизация и создание GFS2 одним узлом
+  hosts: backend1
+  become: true
+  tasks:
+    - name: Выбрать источник для новых пустых дисков
+      ansible.builtin.command: "drbdadm primary --force {{ drbd_resource }}"
+
+    - name: Дождаться синхронизации
+      ansible.builtin.command: "drbdadm status {{ drbd_resource }}"
+      register: sync_status
+      changed_when: false
+      retries: 120
+      delay: 5
+      until:
+        - "'peer-disk:UpToDate' in sync_status.stdout"
+        - "'disk:UpToDate' in sync_status.stdout"
+
+    - name: Создать файловую систему с двумя журналами
+      ansible.builtin.command: "mkfs.gfs2 -O -p lock_dlm -t otus-dz04:shared -j 2 {{ drbd_device }}"
+
+    - name: Вернуть DRBD в secondary
+      ansible.builtin.command: "drbdadm secondary {{ drbd_resource }}"
+
+- name: Передача управления кластеру
+  hosts: backend
+  become: true
+  tasks:
+    - name: Остановить ручной ресурс DRBD
+      ansible.builtin.command: "drbdadm down {{ drbd_resource }}"
+
+    - name: Включить Corosync и Pacemaker
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop: [corosync, pacemaker]
+
+- name: Настройка арбитра и ресурсов
+  hosts: backend1
+  become: true
+  vars_files: [../.local/secrets.yml]
+  tasks:
+    - name: Авторизовать pcs на backend и арбитре
+      ansible.builtin.command:
+        argv: [pcs, host, auth, backend1, backend2, db, -u, hacluster, -p, "{{ cluster_password }}"]
+      no_log: true
+
+    - name: Добавить арбитр кворума с TLS
+      ansible.builtin.command: pcs quorum device add model net host=db algorithm=ffsplit
+
+    - name: Проверить кворум
+      ansible.builtin.command: corosync-quorumtool -s
+      register: quorum
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: "'Quorate:          Yes' in quorum.stdout"
+
+    - name: Загрузить описание ресурсов
+      ansible.builtin.command: crm configure load update /etc/otus-cluster/resources.crm
+
+    - name: Дождаться GFS2 на обоих backend
+      ansible.builtin.command: "mountpoint -q {{ shared_root }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['backend'] }}"
+      register: mounts
+      retries: 30
+      delay: 5
+      until: mounts.rc == 0
+
+    - name: Создать каталоги на общем томе
+      ansible.builtin.file:
+        path: "{{ shared_root }}/{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0750"
+      loop: [static, media]
+
+    - name: Создать маркер готовности
+      ansible.builtin.copy:
+        content: "otus-dz04\n"
+        dest: "{{ shared_root }}/.ready"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0640"
+
+- name: Отметить завершение инициализации
+  hosts: backend
+  become: true
+  tasks:
+    - name: Сохранить маркеры
+      ansible.builtin.copy:
+        content: "initialized\n"
+        dest: "{{ item }}"
+        mode: "0600"
+      loop: [/var/lib/otus-dz04/initialized, /etc/corosync/otus-configured]

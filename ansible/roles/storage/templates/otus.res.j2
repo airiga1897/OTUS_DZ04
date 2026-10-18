@@ -1,0 +1,23 @@
+resource {{ drbd_resource }} {
+ protocol C;
+ options { auto-promote no; }
+ net {
+  allow-two-primaries yes;
+  fencing resource-and-stonith;
+ }
+ handlers {
+  fence-peer "/usr/lib/drbd/crm-fence-peer.9.sh";
+  unfence-peer "/usr/lib/drbd/crm-unfence-peer.9.sh";
+ }
+ disk { on-io-error detach; }
+{% for node in groups['backend'] %}
+ on {{ node }} {
+  node-id {{ loop.index0 }};
+  device {{ drbd_device }};
+  disk {{ hostvars[node].drbd_backing_device | default(drbd_backing_device) }};
+  address {{ hostvars[node].private_ip }}:7788;
+  meta-disk internal;
+ }
+{% endfor %}
+ connection-mesh { hosts backend1 backend2; }
+}

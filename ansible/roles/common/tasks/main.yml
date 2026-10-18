@@ -1,0 +1,28 @@
+- name: Установить базовые пакеты
+  ansible.builtin.apt:
+    name: [python3-venv, python3-apt, ca-certificates, curl]
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Создать пользователя приложения
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    uid: 1500
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+  when: inventory_hostname in groups['backend']
+
+- name: Создать группу доступа pcs на backend и арбитре
+  ansible.builtin.group:
+    name: haclient
+    system: true
+  when: inventory_hostname not in groups['front']
+
+- name: Записать имена узлов для Corosync и pcs
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars[item].private_ip }} {{ item }}"
+    regexp: "^.*\\s{{ item }}$"
+  loop: "{{ groups['all'] }}"
+
